@@ -27,6 +27,7 @@ import { MeetL2sCard } from "@/components/layout/MeetL2sSlider";
 import dayjs from "@/lib/dayjs";
 import { format as d3Format } from "d3";
 import { IS_PRODUCTION } from "@/lib/helpers";
+import LandingEventsChart from "./LandingEventsChart";
 
 const formatNumber = (number: number, decimals = 2): string => {
   if (!Number.isFinite(number)) return "N/A";
@@ -245,6 +246,15 @@ export default function LandingUserBaseChart({ isLoading = false }: { isLoading?
 
 
 
+  console.log(data);
+  console.log(landing);
+  console.log(master);
+  console.log(AllChainsByKeys);
+  console.log(EnabledChainsByKeys);
+  console.log(chainAges);
+  console.log(tableChainKeys);
+  console.log(sort);
+  console.log(selectedChainTypes);
   return (
     <>
       <ShowLoading
@@ -255,9 +265,10 @@ export default function LandingUserBaseChart({ isLoading = false }: { isLoading?
 
       {data && landing && master && AllChainsByKeys ? (
         <>
-          <Container
-            className={`w-full`}
-          >
+
+          <Container className="w-full">
+           
+          
             <LandingChart
               data={data}
               master={master}
@@ -293,6 +304,7 @@ export default function LandingUserBaseChart({ isLoading = false }: { isLoading?
               Overview of the chains being part of the (wider) Ethereum ecosystem.
             </Subheading>
           </Container>
+    
           <Container className="pt-[15px]">
             <TopRowContainer className="!justify-between flex-col rounded-[15px] gap-y-[5px] !p-[2px] lg:!pl-[10px] gap-x-[10px]">
               <TopRowParent className="!justify-center lg:!justify-normal">

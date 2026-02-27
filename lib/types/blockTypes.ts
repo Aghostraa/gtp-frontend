@@ -54,16 +54,7 @@ export interface TableBlock extends BaseBlock {
   type: 'table';
   content: string;
   className?: string;
-  scrollable?: boolean;
   columnOrder?: string[];
-  cardView?: {
-    titleColumn: string;
-    imageColumn?: string;
-    linkColumn?: string;
-    topColumns?: string[];
-    bottomColumns?: string[];
-    hiddenColumns?: string[];
-  };
   columnDefinitions: {
     [key: string]: {
       sortByValue: boolean;
@@ -72,24 +63,34 @@ export interface TableBlock extends BaseBlock {
       isNumeric?: boolean;
       minWidth?: number;
       maxWidth?: number;
-      expand?: boolean;
       copyable?: boolean; // Add this line
       hidden?: boolean;
       add_url?: string; // URL template with ${cellValue} placeholder
-      sourceKey?: string;
-      sourceIndex?: number;
-      autoIndex?: boolean;
-      showIcon?: boolean;
-      showLabel?: boolean;
-      infoTooltip?: {
-        sourceKey?: string;
-        text?: string;
+      sourceKey?: string; // Map display column key to a source key from JSON columns
+      sourceIndex?: number; // Map display column key to a fixed source index
+      infoTooltip?: { sourceKey?: string; text?: string }; // Optional info icon tooltip content
+      autoIndex?: boolean; // Auto-generate 1-based row index when value is missing
+      expand?: boolean; // Column absorbs remaining space (1fr). Only one column should have this.
+      showIcon?: boolean; // For chain type: show chain icon (default true)
+      showLabel?: boolean; // For chain type: show chain name from AllChainsByKeys (default false)
+      uppercase?: boolean; // Render text in uppercase
+      chip?: boolean; // Render value as a monospace pill badge
+      valueMap?: Record<string, string>; // Map raw values to display strings (case-insensitive lookup)
+      valueMapShowKey?: boolean; // Show original key after mapped value, e.g. "US Dollar (USD)"
+      dateFormat?: 'short' | 'medium' | 'long'; // For date type: date display format (default 'medium')
+      showTimeAgo?: boolean; // For date type: show relative time as secondary text (e.g. "100 days ago")
+      cellBar?: {
+        colorColumn?: string; // Column key with origin_key for chain color
+        color?: string;       // Explicit color fallback
       };
-      badgeSources?: Array<{
+      currencyMap?: Record<string, { symbol: string; name: string; country: string }>; // Map currency codes to symbol + name + country code for styled rendering
+      iconMap?: Record<string, { icon: string; label: string }>; // Map raw values to icon + label pairs
+      badgeSources?: Array<{ // For badges type: render color-coded pills from multiple source keys
         sourceKey: string;
         label: string;
         color: string;
       }>;
+      maxVisibleBadges?: number; // For badges type in desktop table view: show first N badges, then "+X more"
       units?: {
         [key: string]: {
           decimals?: number;
@@ -100,6 +101,31 @@ export interface TableBlock extends BaseBlock {
     };
   };
   columnSortBy: "value" | "name" | undefined;
+  rowBar?: {
+    valueColumn: string;   // Column key whose numeric value drives bar width
+    colorColumn?: string;  // Column key with origin_key for chain-based color
+    color?: string;        // Explicit color fallback
+  };
+  scrollable?: boolean; // Wrap rows in VerticalScrollContainer (default true)
+  cardView?: {
+    titleColumn: string; // Column key for card title (header row, displayed prominently)
+    imageColumn?: string; // Column key for avatar/icon (header row)
+    linkColumn?: string; // Column key whose value is used as arrow link (header row)
+
+    // New sections-based layout: ordered rows below the header, each with its own label/layout config.
+    sections?: Array<{
+      columns: string[]; // Column keys to show in this row
+      labelPosition?: "right" | "left" | "top" | "bottom" | "hidden"; // Where column label appears relative to value (default "right")
+      layout?: "spread" | "start" | "end"; // Horizontal distribution (default "spread")
+    }>;
+
+    // Legacy: used when sections is not provided. Kept for backward compatibility.
+    topColumns?: string[];
+    bottomColumns?: string[];
+
+    hiddenColumns?: string[]; // Columns to suppress entirely in card view
+    autoRowHeight?: boolean; // If true, allow card rows to grow with content instead of fixed 20px height
+  };
   readFromJSON: boolean;
   filterOnStateKey?: {
     stateKey: string;
@@ -134,6 +160,7 @@ export interface ChartBlock extends BaseBlock {
   subtitle?: string;
   caption?: string;
   className?: string;
+  centerName?: string; // Center label for pie/donut charts
   chartCategories?: {
     name: string;
     color: string;
@@ -147,7 +174,6 @@ export interface ChartBlock extends BaseBlock {
       type?: string;
       name: string;
       nameFromPath?: string;
-      nameIndex?: number;
       color: string;
       stacking?: "normal" | "percent" | null;
       xIndex: number;
@@ -161,6 +187,30 @@ export interface ChartBlock extends BaseBlock {
       makeNegative?: boolean;
       aggregation?: "daily" | "weekly" | "monthly";
     }[];
+    dynamicSeries?: {
+      url: string;
+      pathToData: string;
+      pathToTypes?: string;
+      ystartIndex?: number;
+      names?: string | string[];
+      colors: string | string[];
+      type?: string;
+      stacking?: "normal" | "percent" | null;
+      xIndex?: number;
+      tooltipDecimals?: number;
+    };
+    pieData?:
+      | { name: string; y: number; color: string; tooltipDecimals?: number }[]
+      | {
+          url: string;
+          pathToData: string;
+          xIndex?: number;
+          yIndex?: number;
+          tooltipDecimals?: number;
+          colors: string | string[];
+          nameMap?: Record<string, string>; // Map raw slice names to display names
+          showPercentage?: boolean; // Show percentage in tooltip (default false)
+        };
   } | null;
   seeMetricURL?: string | null;
   yAxisLine?: {
