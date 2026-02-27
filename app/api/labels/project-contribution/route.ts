@@ -7,9 +7,13 @@ import {
   parseProjectYaml,
   reorderProjectPayload,
   submitProjectContribution,
-  type GitHubRepositoryRef,
-  type ProjectYamlPayload,
 } from "@openlabels/oli-sdk";
+import type {
+  GitHubRepositoryRef,
+  ProjectSocialProfile,
+  ProjectUrlEntry,
+  ProjectYamlPayload,
+} from "@openlabels/oli-sdk/contributions";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter — 5 requests per IP per hour
@@ -132,6 +136,29 @@ const resolveContributionRepositories = () => ({
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const isProjectUrlEntry = (value: unknown): value is ProjectUrlEntry =>
+  isRecord(value) &&
+  typeof value.url === "string" &&
+  value.url.trim().length > 0;
+
+const isProjectUrlEntryArray = (value: unknown): value is ProjectUrlEntry[] =>
+  Array.isArray(value) && value.every(isProjectUrlEntry);
+
+const toProjectSocialProfile = (
+  value: unknown,
+): ProjectSocialProfile | undefined => {
+  if (!isRecord(value)) return undefined;
+
+  const social: ProjectSocialProfile = {};
+  for (const [platform, entries] of Object.entries(value)) {
+    if (isProjectUrlEntryArray(entries)) {
+      social[platform] = entries;
+    }
+  }
+
+  return social;
+};
+
 const mergeEditPayload = (
   existingPayload: ProjectYamlPayload,
   draftPayload: ProjectYamlPayload,
@@ -151,15 +178,15 @@ const mergeEditPayload = (
 
   // Merge partial social updates (twitter/telegram from UI) without dropping other platforms.
   if (Object.prototype.hasOwnProperty.call(draftPayload, "social")) {
-    const existingSocial = isRecord(existingPayload.social)
-      ? (existingPayload.social as Record<string, unknown>)
-      : undefined;
-    const draftSocial = isRecord(draftPayload.social)
-      ? (draftPayload.social as Record<string, unknown>)
-      : undefined;
+    const existingSocial = toProjectSocialProfile(existingPayload.social);
+    const draftSocial = toProjectSocialProfile(draftPayload.social);
 
     if (existingSocial || draftSocial) {
-      merged.social = { ...(existingSocial || {}), ...(draftSocial || {}) };
+      const mergedSocial: ProjectSocialProfile = {
+        ...(existingSocial || {}),
+        ...(draftSocial || {}),
+      };
+      merged.social = mergedSocial;
     }
   }
 
