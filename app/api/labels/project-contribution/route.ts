@@ -3,7 +3,12 @@ import { headers } from "next/headers";
 import {
   DEFAULT_CONTRIBUTION_REPOSITORIES,
   buildProjectPayloadFromDraft,
+  ensureProjectFilePath,
+  parseProjectYaml,
+  reorderProjectPayload,
   submitProjectContribution,
+  type GitHubRepositoryRef,
+  type ProjectYamlPayload,
 } from "@openlabels/oli-sdk";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +91,118 @@ const decodeBase64Bytes = (value: string): Uint8Array => {
   return new Uint8Array(buffer);
 };
 
+const encodeContentPath = (value: string): string =>
+  value
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
+const decodeGitHubFileContent = (content: string): string =>
+  Buffer.from(content.replace(/\n/g, ""), "base64").toString("utf8");
+
+const toRepositoryRef = (input: {
+  owner: string;
+  repo: string;
+  baseBranch: string;
+}): GitHubRepositoryRef => ({
+  owner: input.owner,
+  repo: input.repo,
+  baseBranch: input.baseBranch,
+});
+
+const resolveContributionRepositories = () => ({
+  projects: toRepositoryRef({
+    owner: process.env.OLI_PROJECTS_REPO_OWNER || DEFAULT_CONTRIBUTION_REPOSITORIES.projects.owner,
+    repo: process.env.OLI_PROJECTS_REPO_NAME || DEFAULT_CONTRIBUTION_REPOSITORIES.projects.repo,
+    baseBranch:
+      process.env.OLI_PROJECTS_REPO_BASE_BRANCH ||
+      DEFAULT_CONTRIBUTION_REPOSITORIES.projects.baseBranch ||
+      "main",
+  }),
+  logos: toRepositoryRef({
+    owner: process.env.OLI_LOGOS_REPO_OWNER || DEFAULT_CONTRIBUTION_REPOSITORIES.logos.owner,
+    repo: process.env.OLI_LOGOS_REPO_NAME || DEFAULT_CONTRIBUTION_REPOSITORIES.logos.repo,
+    baseBranch:
+      process.env.OLI_LOGOS_REPO_BASE_BRANCH ||
+      DEFAULT_CONTRIBUTION_REPOSITORIES.logos.baseBranch ||
+      "main",
+  }),
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const mergeEditPayload = (
+  existingPayload: ProjectYamlPayload,
+  draftPayload: ProjectYamlPayload,
+): ProjectYamlPayload => {
+  const merged: ProjectYamlPayload = {
+    ...existingPayload,
+    ...draftPayload,
+    name:
+      typeof existingPayload.name === "string" && existingPayload.name.trim()
+        ? existingPayload.name.trim()
+        : draftPayload.name,
+    version:
+      typeof existingPayload.version === "number"
+        ? existingPayload.version
+        : draftPayload.version,
+  };
+
+  // Merge partial social updates (twitter/telegram from UI) without dropping other platforms.
+  if (Object.prototype.hasOwnProperty.call(draftPayload, "social")) {
+    const existingSocial = isRecord(existingPayload.social)
+      ? (existingPayload.social as Record<string, unknown>)
+      : undefined;
+    const draftSocial = isRecord(draftPayload.social)
+      ? (draftPayload.social as Record<string, unknown>)
+      : undefined;
+
+    if (existingSocial || draftSocial) {
+      merged.social = { ...(existingSocial || {}), ...(draftSocial || {}) };
+    }
+  }
+
+  return reorderProjectPayload(merged);
+};
+
+const fetchExistingProjectPayload = async (input: {
+  token: string;
+  repository: GitHubRepositoryRef;
+  ownerProject: string;
+}): Promise<ProjectYamlPayload> => {
+  const filePath = ensureProjectFilePath(input.ownerProject);
+  const ref = input.repository.baseBranch || "main";
+  const response = await fetch(
+    `https://api.github.com/repos/${encodeURIComponent(input.repository.owner)}/${encodeURIComponent(input.repository.repo)}/contents/${encodeContentPath(filePath)}?ref=${encodeURIComponent(ref)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        Accept: "application/vnd.github+json",
+      },
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Could not load existing project YAML for edit mode (${filePath}): HTTP ${response.status} ${body}`,
+    );
+  }
+
+  const payload = (await response.json()) as { content?: string; encoding?: string };
+  if (!payload.content || payload.encoding !== "base64") {
+    throw new Error(
+      `Unexpected GitHub content response for ${filePath}. Missing base64-encoded content.`,
+    );
+  }
+
+  const yamlText = decodeGitHubFileContent(payload.content);
+  return parseProjectYaml(yamlText);
+};
+
 export async function POST(request: Request) {
   try {
     // Rate limit
@@ -138,7 +255,8 @@ export async function POST(request: Request) {
       },
     };
 
-    const payload = buildProjectPayloadFromDraft(draftInput);
+    const repositories = resolveContributionRepositories();
+    const draftPayload = buildProjectPayloadFromDraft(draftInput);
 
     const githubToken =
       process.env.OLI_GITHUB_TOKEN ||
@@ -150,6 +268,18 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
+
+    const payload =
+      mode === "edit"
+        ? mergeEditPayload(
+            await fetchExistingProjectPayload({
+              token: githubToken,
+              repository: repositories.projects,
+              ownerProject,
+            }),
+            draftPayload,
+          )
+        : draftPayload;
 
     const logoBase64 = rawLogoBase64;
     let logoContribution:
@@ -184,18 +314,7 @@ export async function POST(request: Request) {
         existingProjectName: mode === "edit" ? ownerProject : undefined,
       },
       logo: logoContribution,
-      repositories: {
-        projects: {
-          owner: process.env.OLI_PROJECTS_REPO_OWNER || DEFAULT_CONTRIBUTION_REPOSITORIES.projects.owner,
-          repo: process.env.OLI_PROJECTS_REPO_NAME || DEFAULT_CONTRIBUTION_REPOSITORIES.projects.repo,
-          baseBranch: process.env.OLI_PROJECTS_REPO_BASE_BRANCH || DEFAULT_CONTRIBUTION_REPOSITORIES.projects.baseBranch,
-        },
-        logos: {
-          owner: process.env.OLI_LOGOS_REPO_OWNER || DEFAULT_CONTRIBUTION_REPOSITORIES.logos.owner,
-          repo: process.env.OLI_LOGOS_REPO_NAME || DEFAULT_CONTRIBUTION_REPOSITORIES.logos.repo,
-          baseBranch: process.env.OLI_LOGOS_REPO_BASE_BRANCH || DEFAULT_CONTRIBUTION_REPOSITORIES.logos.baseBranch,
-        },
-      },
+      repositories,
       targetOwner: process.env.OLI_GITHUB_TARGET_OWNER || undefined,
       autoCreateFork: parseBooleanEnv(process.env.OLI_GITHUB_AUTO_CREATE_FORK, true),
       branchPrefix: process.env.OLI_GITHUB_BRANCH_PREFIX || undefined,

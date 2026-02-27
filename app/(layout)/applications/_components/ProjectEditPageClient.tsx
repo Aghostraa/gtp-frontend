@@ -2813,7 +2813,7 @@ export default function ProjectEditPageClient() {
                         const isEditingAddress = addressEditRow === rowIndex;
 
                         return (
-                          <Fragment key={`${rowIndex}-${rowPreviewSignature(row)}`}>
+                          <Fragment key={rowIndex}>
                             <tr>
                             {/* # */}
                             <td className={`${cellFirst} text-color-text-secondary text-xxs`}>
