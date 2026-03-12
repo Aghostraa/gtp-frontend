@@ -83,6 +83,7 @@ export type ContractsQueueReturn = {
   // Computed / options
   chainOptions: SearchDropdownOption[];
   chainByEip155: Record<string, { urlKey: string; color: string }>;
+  eip155ByUrlKey: Record<string, string>;
   chainIconRenderer: (value: string) => ReactNode;
   ownerProjectIconRenderer: (value: string) => ReactNode;
   usageCategoryIconRenderer: (value: string) => ReactNode;
@@ -257,6 +258,25 @@ export function useContractsQueue({
     map["starknet:SN_MAIN"] = { urlKey: "starknet", color: "#EC796B" };
     return map;
   }, [masterData]);
+
+  const eip155ByUrlKey = useMemo(() => {
+    const map: Record<string, string> = {};
+    // Map by url_key (e.g. "base" → "eip155:8453")
+    for (const [eip155, info] of Object.entries(chainByEip155)) {
+      if (info.urlKey) map[info.urlKey] = eip155;
+    }
+    // Also map by masterData chain dict key, since GTP API origin_key uses that
+    if (masterData?.chains) {
+      for (const [chainKey, chain] of Object.entries(masterData.chains)) {
+        const c = chain as { evm_chain_id?: unknown };
+        const chainId = c.evm_chain_id != null ? String(c.evm_chain_id).trim() : "";
+        if (!chainId || chainId === "null" || map[chainKey]) continue;
+        map[chainKey] = `eip155:${chainId}`;
+      }
+    }
+    map["starknet"] = "starknet:SN_MAIN";
+    return map;
+  }, [chainByEip155, masterData]);
 
   const chainIconRenderer = useCallback(
     (value: string): ReactNode => {
@@ -993,6 +1013,7 @@ export function useContractsQueue({
     setWalletError,
     chainOptions,
     chainByEip155,
+    eip155ByUrlKey,
     chainIconRenderer,
     ownerProjectIconRenderer,
     usageCategoryIconRenderer,

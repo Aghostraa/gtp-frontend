@@ -1,8 +1,10 @@
 "use client";
 
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import useSWR from "swr";
 import Icon from "@/components/layout/Icon";
+import { ApplicationsURLs } from "@/lib/urls";
 import { GTPIcon } from "@/components/layout/GTPIcon";
 import { GTPButton } from "@/components/GTPButton/GTPButton";
 import { validateAddressForChain } from "@openlabels/oli-sdk/validation";
@@ -11,6 +13,7 @@ import type { QueueEditableField, QueueSubmitPreview, SearchDropdownOption } fro
 import { asString, getTxExplorerUrl, toStringValue, truncateHex } from "./utils";
 import { FieldDropdown, FieldDropdownButton, FieldInput } from "./FieldDropdown";
 import { ApplicationIcon } from "@/app/(layout)/applications/_components/Components";
+import { Switch } from "@/components/Switch";
 import type { ReactNode, ChangeEvent, RefObject } from "react";
 import type { useBulkCsvAttestUI, useSingleAttestUI } from "@openlabels/oli-sdk/attest-ui";
 
@@ -39,6 +42,8 @@ type ContractsStepProps = {
   defaultQueueChainId: string;
   chainIconRenderer: (value: string) => ReactNode;
   usageCategoryIconRenderer: (value: string) => ReactNode;
+  eip155ByUrlKey: Record<string, string>;
+  mergeRowsIntoQueue: (rows: AttestationRowInput[]) => void;
 
   // Cell operations
   setQueueCellValue: (rowIndex: number, field: QueueEditableField, value: string) => void;
@@ -118,6 +123,8 @@ export function ContractsStep({
   defaultQueueChainId,
   chainIconRenderer,
   usageCategoryIconRenderer,
+  eip155ByUrlKey,
+  mergeRowsIntoQueue,
   setQueueCellValue,
   addQueueRow,
   removeQueueRow,
@@ -168,10 +175,71 @@ export function ContractsStep({
   const [surveyMetric, setSurveyMetric] = useState("");
   const [surveyOther, setSurveyOther] = useState("");
 
+  // Existing contracts collapsible
+  const [existingContractsOpen, setExistingContractsOpen] = useState(false);
+  const [lockedAddressKeys, setLockedAddressKeys] = useState<Set<string>>(new Set());
+
   // Error block
   const [errorExpanded, setErrorExpanded] = useState(false);
   const nameColWidthRef = useRef(80); // always-current ref used inside RAF closures
   const animFrameRef = useRef<number | null>(null);
+
+  // Existing contracts — fetch project details from GTP API
+  const { data: detailsData, isLoading: isLoadingExistingContracts } = useSWR<any>(
+    !isAddMode && ownerProject
+      ? ApplicationsURLs.details.replace("{owner_project}", ownerProject)
+      : null,
+    { revalidateOnFocus: false },
+  );
+
+  const allExistingContracts = useMemo(() => {
+    if (!detailsData?.contracts_table) return [] as Array<{ address: string; name: string; sub_category_key: string; origin_key: string }>;
+    const contractsTable: { types: string[]; data: any[][] } =
+      detailsData.contracts_table["max"] ?? Object.values(detailsData.contracts_table)[0];
+    if (!contractsTable?.types || !contractsTable?.data) return [] as Array<{ address: string; name: string; sub_category_key: string; origin_key: string }>;
+    const types = contractsTable.types;
+    return contractsTable.data.map((row) => {
+      const c: Record<string, any> = {};
+      types.forEach((t, i) => { c[t] = row[i]; });
+      return c as { address: string; name: string; sub_category_key: string; origin_key: string };
+    });
+  }, [detailsData]);
+
+  const queueAddressKeySet = useMemo(
+    () =>
+      new Set(
+        bulkController.queue.rows.map(
+          (r) => `${toStringValue(r.chain_id).trim()}::${toStringValue(r.address).trim().toLowerCase()}`,
+        ),
+      ),
+    [bulkController.queue.rows],
+  );
+
+  const filteredExistingContracts = useMemo(
+    () =>
+      allExistingContracts.filter((c) => {
+        const eip155 = eip155ByUrlKey[c.origin_key] ?? defaultQueueChainId;
+        const key = `${eip155}::${String(c.address).toLowerCase()}`;
+        return !queueAddressKeySet.has(key);
+      }),
+    [allExistingContracts, queueAddressKeySet, eip155ByUrlKey, defaultQueueChainId],
+  );
+
+  const addExistingToQueue = useCallback(
+    (contract: { address: string; name: string; sub_category_key: string; origin_key: string }) => {
+      const eip155 = eip155ByUrlKey[contract.origin_key] ?? defaultQueueChainId;
+      const key = `${eip155}::${String(contract.address).toLowerCase()}`;
+      setLockedAddressKeys((prev) => new Set([...prev, key]));
+      mergeRowsIntoQueue([{
+        chain_id: eip155,
+        address: String(contract.address),
+        contract_name: String(contract.name || ""),
+        owner_project: ownerProject,
+        usage_category: String(contract.sub_category_key || ""),
+      }]);
+    },
+    [eip155ByUrlKey, defaultQueueChainId, mergeRowsIntoQueue, ownerProject],
+  );
 
   // canvas-based text measurement — synchronous, no DOM visibility dependency
   const measureTextPx = (text: string): number => {
@@ -409,25 +477,42 @@ export function ContractsStep({
           <div className="border-t border-color-ui-shadow/40 px-[20px] pb-[20px] pt-[16px]">
             {/* Toolbar */}
             <div className="mb-[12px]">
-              <div className="flex flex-wrap items-center gap-[8px]">
-                <input
-                  ref={csvInputRef}
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={onCsvInputChange}
-                />
-                <GTPButton label="Upload CSV" variant="primary" size="sm" clickHandler={() => csvInputRef.current?.click()} />
-                <GTPButton
-                  label="Smart Paste"
-                  variant={smartPasteOpen ? "highlight" : "primary"}
-                  size="sm"
-                  clickHandler={() => {
-                    setSmartPasteOpen((v) => !v);
-                    setClassifyError(null);
-                  }}
-                />
-                <GTPButton label="Add row" variant="primary" size="sm" clickHandler={addQueueRow} />
+              <div className="flex items-center justify-between gap-[8px]">
+                <div className="flex flex-wrap items-center gap-[8px]">
+                  <input
+                    ref={csvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={onCsvInputChange}
+                  />
+                  <GTPButton label="Upload CSV" variant="primary" size="sm" clickHandler={() => csvInputRef.current?.click()} />
+                  <GTPButton
+                    label="Smart Paste"
+                    variant={smartPasteOpen ? "highlight" : "primary"}
+                    size="sm"
+                    clickHandler={() => {
+                      setSmartPasteOpen((v) => !v);
+                      setClassifyError(null);
+                    }}
+                  />
+                  <GTPButton label="Add row" variant="primary" size="sm" clickHandler={addQueueRow} />
+                </div>
+                {!isAddMode && (filteredExistingContracts.length > 0 || isLoadingExistingContracts) && (
+                  <div className="flex items-center gap-x-[8px] shrink-0">
+                    <Switch
+                      checked={existingContractsOpen}
+                      onChange={() => setExistingContractsOpen((v) => !v)}
+                      rightLabel="Edit existing"
+                      size="sm"
+                    />
+                    {!isLoadingExistingContracts && (
+                      <span className="rounded-full bg-color-bg-medium border border-color-ui-shadow/60 px-[7px] py-[1px] text-xxs text-color-text-secondary">
+                        {filteredExistingContracts.length}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {smartPasteOpen && (
@@ -573,6 +658,7 @@ export function ContractsStep({
                       rowHasError && usageCategory !== "" && !usageCategoryOptions.some((o) => o.value === usageCategory);
                     const hasData = addressVal !== "" || rowOwnerProject !== "" || usageCategory !== "";
                     const rowIsClean = queueHasValidationResult && !rowHasError && hasData;
+                    const isAddressLocked = lockedAddressKeys.has(`${chainId}::${addressVal.toLowerCase()}`);
                     const rowBg = rowHasError ? "bg-color-negative/[0.07]" : rowIsClean ? "bg-color-positive/[0.04]" : "";
                     const border = rowHasError ? "border-color-negative/30" : rowIsClean ? "border-color-positive/30" : "border-white/[0.1]";
                     const cellMid = `${rowBg} py-[4px] align-middle border-t border-b ${border}`;
@@ -613,7 +699,7 @@ export function ContractsStep({
                               <div
                                 className="relative focus-within:z-50 w-full"
                               >
-                                {activeRowDropdown === chainDropdownKey ? (
+                                {activeRowDropdown === chainDropdownKey && !isAddressLocked ? (
                                   <div className={`relative z-10 flex w-full items-center bg-color-bg-default rounded-full h-[24px] pl-[6px] pr-[8px] ${rowHasError ? "bg-color-negative/20 ring-1 ring-color-negative/50" : ""}`}>
                                     <div className="mr-[4px] shrink-0 size-[15px] flex items-center justify-center">
                                       {chainIconRenderer(chainId)}
@@ -643,14 +729,14 @@ export function ContractsStep({
                                 ) : (
                                   <button
                                     type="button"
-                                    className={`size-[28px] rounded-full flex items-center justify-center transition-colors ${rowHasError ? "bg-color-negative/15 outline outline-1 outline-color-negative/40" : "bg-color-bg-default hover:bg-color-ui-hover"}`}
-                                    onClick={() => openChainDropdown(rowIndex, selectedChainLabel)}
+                                    className={`size-[28px] rounded-full flex items-center justify-center transition-colors ${rowHasError ? "bg-color-negative/15 outline outline-1 outline-color-negative/40" : "bg-color-bg-default hover:bg-color-ui-hover"} ${isAddressLocked ? "cursor-default pointer-events-none" : ""}`}
+                                    onClick={isAddressLocked ? undefined : () => openChainDropdown(rowIndex, selectedChainLabel)}
                                     title={selectedChainLabel || "Chain"}
                                   >
                                     {chainIconRenderer(chainId)}
                                   </button>
                                 )}
-                                {activeRowDropdown === chainDropdownKey && (
+                                {activeRowDropdown === chainDropdownKey && !isAddressLocked && (
                                   <FieldDropdown
                                     options={filterRowOptions(chainOptions, chainQuery)}
                                     onSelectOption={(value) => {
@@ -669,7 +755,7 @@ export function ContractsStep({
                           </td>
                           <td className={`${cellMid} pl-[2px] pr-[6px]`}>
                             <div className="w-full" data-row-dropdown-root="true">
-                              {activeRowDropdown === addrEditKey ? (
+                              {activeRowDropdown === addrEditKey && !isAddressLocked ? (
                                 <FieldInput
                                   value={toStringValue(row.address)}
                                   onChange={(value) => setQueueCellValue(rowIndex, "address", value)}
@@ -682,8 +768,8 @@ export function ContractsStep({
                                 />
                               ) : (
                                 <div
-                                  className={`flex w-full items-center rounded-full h-[24px] bg-color-bg-default pl-[6px] pr-[10px] cursor-text ${addressInvalid ? "bg-color-negative/20 ring-1 ring-color-negative/50" : ""}`}
-                                  onClick={() => setActiveRowDropdown(addrEditKey)}
+                                  className={`flex w-full items-center rounded-full h-[24px] bg-color-bg-default pl-[6px] pr-[10px] ${isAddressLocked ? "cursor-default" : "cursor-text"} ${addressInvalid ? "bg-color-negative/20 ring-1 ring-color-negative/50" : ""}`}
+                                  onClick={isAddressLocked ? undefined : () => setActiveRowDropdown(addrEditKey)}
                                 >
                                   <div className="flex flex-1 min-w-0 font-mono text-xs text-color-text-primary overflow-hidden">
                                     {addressVal ? (
@@ -925,6 +1011,95 @@ export function ContractsStep({
                 />
               )}
             </div>
+
+            {/* Existing contracts — pill table */}
+            {!isAddMode && existingContractsOpen && filteredExistingContracts.length > 0 && (
+                  <div className="mt-[10px]">
+                    <table className="w-full table-fixed text-xs border-separate border-spacing-y-[5px]">
+                      <colgroup>
+                        <col style={{ width: "40px" }} />
+                        <col style={{ width: "32%" }} />
+                        <col style={{ width: "26%" }} />
+                        <col />
+                        <col style={{ width: "46px" }} />
+                      </colgroup>
+                      <thead>
+                        <tr className="text-xs text-color-text-primary">
+                          <th className="px-[4px] pb-[4px] text-center font-normal">Chain</th>
+                          <th className="px-[6px] pb-[4px] text-left font-normal">Address</th>
+                          <th className="px-[6px] pb-[4px] text-left font-normal">Name</th>
+                          <th className="px-[6px] pb-[4px] text-left font-normal">Usage</th>
+                          <th className="pb-[4px]" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredExistingContracts.map((contract) => {
+                          const eip155 = eip155ByUrlKey[contract.origin_key] ?? defaultQueueChainId;
+                          const usageLabel = usageCategoryOptions.find((o) => o.value === contract.sub_category_key)?.label ?? contract.sub_category_key ?? "";
+                          const ecCellMid = "py-[4px] align-middle border-t border-b border-white/[0.1]";
+                          const ecCellFirst = `${ecCellMid} border-l rounded-l-full px-[2px]`;
+                          const ecCellLast = `${ecCellMid} border-r rounded-r-full pl-[2px] pr-[8px]`;
+                          return (
+                            <tr key={`${contract.origin_key}::${contract.address}`}>
+                              <td className={ecCellFirst}>
+                                <div className="flex items-center justify-center size-[28px] mx-auto">
+                                  {chainIconRenderer(eip155) ?? <Icon icon="feather:link" className="size-[13px] text-color-text-secondary" />}
+                                </div>
+                              </td>
+                              <td className={`${ecCellMid} pl-[2px] pr-[6px]`}>
+                                <div className="flex w-full items-center rounded-full h-[24px] bg-color-bg-default pl-[6px] pr-[10px]">
+                                  <div className="flex flex-1 min-w-0 font-mono text-xs text-color-text-primary overflow-hidden">
+                                    {String(contract.address) ? (
+                                      <>
+                                        <div
+                                          className="min-w-0 overflow-hidden"
+                                          style={{ WebkitMaskImage: "linear-gradient(to right, black 20%, transparent)", maskImage: "linear-gradient(to right, black 20%, transparent)" }}
+                                        >
+                                          {String(contract.address).slice(0, -6)}
+                                        </div>
+                                        <span
+                                          className="shrink-0"
+                                          style={{ WebkitMaskImage: "linear-gradient(to left, black 20%, transparent)", maskImage: "linear-gradient(to left, black 20%, transparent)" }}
+                                        >
+                                          {String(contract.address).slice(-6)}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="text-color-text-secondary">—</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className={`${ecCellMid} pl-[2px] pr-[6px]`}>
+                                <div className="flex w-full items-center rounded-full h-[24px] bg-color-bg-default px-[6px]">
+                                  <span className="text-xs text-color-text-primary truncate">
+                                    {contract.name || <span className="text-color-text-secondary italic">Unnamed</span>}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className={`${ecCellMid} pl-[2px] pr-[6px]`}>
+                                <div className="flex w-full items-center gap-x-[4px] rounded-full h-[24px] bg-color-bg-default pl-[8px] pr-[6px]">
+                                  {usageCategoryIconRenderer(contract.sub_category_key)}
+                                  <span className="text-xs text-color-text-secondary truncate">{usageLabel}</span>
+                                </div>
+                              </td>
+                              <td className={ecCellLast}>
+                                <div className="flex items-center justify-end">
+                                  <GTPButton
+                                    variant="highlight"
+                                    size="sm"
+                                    leftIcon="in-button-up"
+                                    clickHandler={() => addExistingToQueue(contract)}
+                                  />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+            )}
 
           </div>
         )}

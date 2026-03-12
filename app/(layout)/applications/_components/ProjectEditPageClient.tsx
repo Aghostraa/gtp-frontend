@@ -569,6 +569,8 @@ export default function ProjectEditPageClient() {
                 defaultQueueChainId={queueHook.defaultQueueChainId}
                 chainIconRenderer={queueHook.chainIconRenderer}
                 usageCategoryIconRenderer={queueHook.usageCategoryIconRenderer}
+                eip155ByUrlKey={queueHook.eip155ByUrlKey}
+                mergeRowsIntoQueue={queueHook.mergeRowsIntoQueue}
                 setQueueCellValue={queueHook.setQueueCellValue}
                 addQueueRow={queueHook.addQueueRow}
                 removeQueueRow={queueHook.removeQueueRow}
