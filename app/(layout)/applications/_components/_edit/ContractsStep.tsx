@@ -181,6 +181,9 @@ export function ContractsStep({
 
   // Error block
   const [errorExpanded, setErrorExpanded] = useState(false);
+  // Bulk column actions
+  const [bulkActionField, setBulkActionField] = useState<QueueEditableField | null>(null);
+  const [bulkActionQuery, setBulkActionQuery] = useState("");
   const nameColWidthRef = useRef(80); // always-current ref used inside RAF closures
   const animFrameRef = useRef<number | null>(null);
 
@@ -240,6 +243,30 @@ export function ContractsStep({
     },
     [eip155ByUrlKey, defaultQueueChainId, mergeRowsIntoQueue, ownerProject],
   );
+
+  const addAllExistingToQueue = useCallback(() => {
+    const rows = filteredExistingContracts.map(contract => {
+      const eip155 = eip155ByUrlKey[contract.origin_key] ?? defaultQueueChainId;
+      return {
+        key: `${eip155}::${String(contract.address).toLowerCase()}`,
+        row: {
+          chain_id: eip155,
+          address: String(contract.address),
+          contract_name: String(contract.name || ""),
+          owner_project: ownerProject,
+          usage_category: String(contract.sub_category_key || ""),
+        },
+      };
+    });
+    setLockedAddressKeys(prev => new Set([...prev, ...rows.map(r => r.key)]));
+    mergeRowsIntoQueue(rows.map(r => r.row));
+  }, [filteredExistingContracts, eip155ByUrlKey, defaultQueueChainId, ownerProject, mergeRowsIntoQueue]);
+
+  const setBulkColumnValue = useCallback((field: QueueEditableField, value: string) => {
+    bulkController.queue.rows.forEach((_, i) => {
+      setQueueCellValue(i, field, value);
+    });
+  }, [bulkController.queue.rows, setQueueCellValue]);
 
   // canvas-based text measurement — synchronous, no DOM visibility dependency
   const measureTextPx = (text: string): number => {
@@ -380,6 +407,10 @@ export function ContractsStep({
       if (!target?.closest("[data-row-dropdown-root='true']")) {
         setActiveRowDropdown(null);
       }
+      if (!target?.closest("[data-bulk-header-root='true']")) {
+        setBulkActionField(null);
+        setBulkActionQuery("");
+      }
     };
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
@@ -431,6 +462,79 @@ export function ContractsStep({
     const key = `chain-${rowIndex}`;
     setRowDropdownQuery((prev) => ({ ...prev, [key]: selectedLabel }));
     setActiveRowDropdown(key);
+  };
+
+  const renderBulkPopover = (
+    field: QueueEditableField,
+    fieldType: "dropdown" | "text",
+    options?: SearchDropdownOption[],
+    iconRenderer?: (value: string) => ReactNode,
+  ) => {
+    if (bulkActionField !== field || bulkController.queue.rows.length === 0) return null;
+    return (
+      <div
+        className="absolute top-full left-1/2 -translate-x-1/2 z-[100] mt-[4px] min-w-[180px] rounded-[12px] bg-color-bg-medium border border-color-ui-shadow/40 shadow-[0px_4px_24px_rgba(0,0,0,0.4)] p-[6px] flex flex-col gap-[4px]"
+        data-bulk-header-root="true"
+      >
+        <button
+          type="button"
+          className="w-full flex items-center gap-[6px] rounded-[8px] px-[8px] py-[6px] text-xs text-color-negative hover:bg-color-negative/10 transition-colors text-left"
+          onClick={() => { setBulkColumnValue(field, ""); setBulkActionField(null); }}
+        >
+          <Icon icon="feather:x-circle" className="size-[11px]" />
+          Clear all
+        </button>
+        <div className="border-t border-color-ui-shadow/30 pt-[4px]">
+          <div className="text-xxs text-color-text-secondary mb-[4px] px-[2px]">Set all to</div>
+          {fieldType === "text" ? (
+            <div className="flex items-center gap-[4px]">
+              <div className="flex flex-1 items-center bg-color-bg-default rounded-full h-[26px] px-[8px]">
+                <input
+                  value={bulkActionQuery}
+                  onChange={(e) => setBulkActionQuery(e.target.value)}
+                  placeholder="Type value..."
+                  className="flex-1 h-full bg-transparent border-none outline-none text-xs text-color-text-primary placeholder-color-text-secondary"
+                  autoFocus
+                />
+              </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-full px-[8px] h-[26px] text-xs bg-color-ui-active text-color-text-primary hover:bg-color-ui-hover transition-colors whitespace-nowrap"
+                onClick={() => { setBulkColumnValue(field, bulkActionQuery); setBulkActionField(null); setBulkActionQuery(""); }}
+              >
+                Apply
+              </button>
+            </div>
+          ) : (
+            <div className="relative" data-bulk-header-root="true">
+              <div className="flex w-full items-center bg-color-bg-default rounded-full h-[26px] px-[8px]">
+                <input
+                  value={bulkActionQuery}
+                  onChange={(e) => setBulkActionQuery(e.target.value)}
+                  placeholder="Search..."
+                  className="flex-1 h-full bg-transparent border-none outline-none text-xs text-color-text-primary placeholder-color-text-secondary"
+                  autoFocus
+                />
+              </div>
+              {options && (
+                <FieldDropdown
+                  options={filterRowOptions(options, bulkActionQuery)}
+                  onSelectOption={(value) => {
+                    setBulkColumnValue(field, value);
+                    setBulkActionField(null);
+                    setBulkActionQuery("");
+                  }}
+                  iconRenderer={iconRenderer}
+                  topOffset={26}
+                  itemHeight={34}
+                  maxVisible={5}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -510,6 +614,14 @@ export function ContractsStep({
                       <span className="rounded-full bg-color-bg-medium border border-color-ui-shadow/60 px-[7px] py-[1px] text-xxs text-color-text-secondary">
                         {filteredExistingContracts.length}
                       </span>
+                    )}
+                    {existingContractsOpen && filteredExistingContracts.length > 0 && (
+                      <GTPButton
+                        label="Add all"
+                        variant="highlight"
+                        size="sm"
+                        clickHandler={addAllExistingToQueue}
+                      />
                     )}
                   </div>
                 )}
@@ -614,11 +726,51 @@ export function ContractsStep({
                 <thead>
                   <tr className="text-xs text-color-text-primary">
                     <th className="pl-[8px] pr-[4px] pb-[4px] text-left font-normal" />
-                    <th className="px-[4px] pb-[4px] text-center font-normal">Chain</th>
+                    <th className="px-[4px] pb-[4px] text-center font-normal">
+                      <div className="relative inline-flex items-center justify-center gap-[2px]" data-bulk-header-root="true">
+                        Chain
+                        {bulkController.queue.rows.length > 0 && (
+                          <button type="button" className={`rounded-full p-[1px] transition-colors ${bulkActionField === "chain_id" ? "text-color-text-primary" : "text-color-text-secondary hover:text-color-text-primary"}`} onClick={() => { setBulkActionField(f => f === "chain_id" ? null : "chain_id"); setBulkActionQuery(""); }}>
+                            <Icon icon="feather:chevron-down" className="size-[9px]" />
+                          </button>
+                        )}
+                        {renderBulkPopover("chain_id", "dropdown", chainOptions, chainIconRenderer)}
+                      </div>
+                    </th>
                     <th className="px-[6px] pb-[4px] text-left font-normal">Address</th>
-                    <th className="px-[6px] pb-[4px] text-left font-normal">Name</th>
-                    <th className="px-[6px] pb-[4px] text-left font-normal">Owner</th>
-                    <th className="px-[6px] pb-[4px] text-left font-normal">Usage</th>
+                    <th className="px-[6px] pb-[4px] text-left font-normal">
+                      <div className="relative inline-flex items-center gap-[2px]" data-bulk-header-root="true">
+                        Name
+                        {bulkController.queue.rows.length > 0 && (
+                          <button type="button" className={`rounded-full p-[1px] transition-colors ${bulkActionField === "contract_name" ? "text-color-text-primary" : "text-color-text-secondary hover:text-color-text-primary"}`} onClick={() => { setBulkActionField(f => f === "contract_name" ? null : "contract_name"); setBulkActionQuery(""); }}>
+                            <Icon icon="feather:chevron-down" className="size-[9px]" />
+                          </button>
+                        )}
+                        {renderBulkPopover("contract_name", "text")}
+                      </div>
+                    </th>
+                    <th className="px-[6px] pb-[4px] text-left font-normal">
+                      <div className="relative inline-flex items-center gap-[2px]" data-bulk-header-root="true">
+                        Owner
+                        {bulkController.queue.rows.length > 0 && (
+                          <button type="button" className={`rounded-full p-[1px] transition-colors ${bulkActionField === "owner_project" ? "text-color-text-primary" : "text-color-text-secondary hover:text-color-text-primary"}`} onClick={() => { setBulkActionField(f => f === "owner_project" ? null : "owner_project"); setBulkActionQuery(""); }}>
+                            <Icon icon="feather:chevron-down" className="size-[9px]" />
+                          </button>
+                        )}
+                        {renderBulkPopover("owner_project", "dropdown", ownerProjectOptions, (value) => value ? <ApplicationIcon owner_project={value} size="sm" className="flex items-center justify-center select-none size-[15px]" /> : <Icon icon="feather:unlink" className="size-[11px] text-color-text-secondary" />)}
+                      </div>
+                    </th>
+                    <th className="px-[6px] pb-[4px] text-left font-normal">
+                      <div className="relative inline-flex items-center gap-[2px]" data-bulk-header-root="true">
+                        Usage
+                        {bulkController.queue.rows.length > 0 && (
+                          <button type="button" className={`rounded-full p-[1px] transition-colors ${bulkActionField === "usage_category" ? "text-color-text-primary" : "text-color-text-secondary hover:text-color-text-primary"}`} onClick={() => { setBulkActionField(f => f === "usage_category" ? null : "usage_category"); setBulkActionQuery(""); }}>
+                            <Icon icon="feather:chevron-down" className="size-[9px]" />
+                          </button>
+                        )}
+                        {renderBulkPopover("usage_category", "dropdown", usageCategoryOptions, usageCategoryIconRenderer)}
+                      </div>
+                    </th>
                     <th className="pb-[4px]" />
                   </tr>
                 </thead>
